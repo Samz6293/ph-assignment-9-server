@@ -205,8 +205,9 @@ const withPublicVendor = [
     {
         $lookup: {
             from: "users", localField: "vendorId", foreignField: "_id", as: "vendor",
-            // pipeline runs on the matched user: keep name and businessName only (no email, role or block status)
-            pipeline: [{ $project: { _id: 0, name: 1, businessName: 1 } }],
+            // pipeline runs on the matched user: keep only public fields (no email, role or block status)
+            // subscriptionPlan: Premium vendors get a badge on their cards
+            pipeline: [{ $project: { _id: 0, name: 1, businessName: 1, subscriptionPlan: 1 } }],
         },
     },
     { $unwind: "$vendor" },
@@ -220,7 +221,11 @@ app.get("/menu-items", async (req, res) => {
 
     if (typeof search === "string" && search) {
         const safeSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        query.itemName = { $regex: safeSearch, $options: "i" };
+        // matches the item name or its category, so "italiano" finds Lasagna as well as "Italiano Supreme"
+        query.$or = [
+            { itemName: { $regex: safeSearch, $options: "i" } },
+            { category: { $regex: safeSearch, $options: "i" } },
+        ];
     }
     if (categories.includes(category)) query.category = category;
     if (typeof location === "string" && location) {
