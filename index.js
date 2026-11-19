@@ -159,6 +159,18 @@ app.patch("/admin/menu-items/:id/status", verifyToken, loadUser, verifyRole("adm
     res.send(result);
 });
 
+// Delete a menu item (admin): for items that break the rules
+app.delete("/admin/menu-items/:id", verifyToken, loadUser, verifyRole("admin"), async (req, res) => {
+    const id = req.params.id;
+    if (!ObjectId.isValid(id)) return res.status(404).send({ message: "This menu item doesn't exist" });
+
+    const result = await menuItemsCollection.deleteOne({ _id: new ObjectId(id) });
+    // deletedCount 0: nothing had that id (already deleted, or never existed)
+    if (result.deletedCount === 0) return res.status(404).send({ message: "This menu item doesn't exist" });
+
+    res.send(result);
+});
+
 // Stats
 // admin overview: numbers for the stat cards and the two charts
 app.get("/stats/admin", verifyToken, loadUser, verifyRole("admin"), async (req, res) => {
