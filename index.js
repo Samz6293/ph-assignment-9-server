@@ -27,10 +27,11 @@ app.get("/users/me", verifyToken, loadUser, (req, res) => {
 });
 
 // Admin: users
-// every user, newest first; ?search= matches name or email, ?role= filters by role
+// every user except the admin asking, newest first; ?search= matches name or email, ?role= filters by role
 app.get("/admin/users", verifyToken, loadUser, verifyRole("admin"), async (req, res) => {
     const { search, role } = req.query;
-    const query = {};
+    // $ne: "not equal", so the signed-in admin is left out (the page shows them separately)
+    const query = { _id: { $ne: req.user._id } };
 
     if (typeof search === "string" && search) {
         // escape regex symbols so a search like "a.b" matches the text "a.b" literally
