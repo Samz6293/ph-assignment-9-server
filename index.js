@@ -69,6 +69,96 @@ app.patch("/admin/users/:id/block", verifyToken, loadUser, verifyRole("admin"), 
     res.send(result);
 });
 
+// Menu items
+// the six categories from the assignment; the client's dropdown uses the same list
+const categories = ["Classic Pizzas", "Vegetarian Pizzas", "Meat Lovers", "Specialty / Gourmet Pizzas", "BBQ Pizza", "Italiano"];
+const freePlanLimit = 3;
+
+// Add a menu item (vendor): saved as pending until an admin approves it
+app.post("/menu-items", verifyToken, loadUser, verifyRole("vendor"), async (req, res) => {
+    const { itemName, category, description, price, location, images } = req.body ?? {};
+
+    // the form checks these too, but anyone can call the API directly
+    if (typeof itemName !== "string" || !itemName.trim()) return res.status(400).send({ message: "Enter the item's name" });
+    if (!categories.includes(category)) return res.status(400).send({ message: "Choose a category from the list" });
+    if (typeof description !== "string" || description.trim().length < 10) return res.status(400).send({ message: "Describe the item in at least 10 characters" });
+    if (typeof price !== "number" || !(price > 0)) return res.status(400).send({ message: "Enter a price above 0" });
+    if (typeof location !== "string" || !location.trim()) return res.status(400).send({ message: "Enter the area and city, e.g. Zindabazar, Sylhet" });
+
+    const isValidImages = Array.isArray(images) && images.length >= 1 && images.length <= 4
+        && images.every((url) => typeof url === "string" && url.startsWith("https://"));
+    if (!isValidImages) return res.status(400).send({ message: "Upload between 1 and 4 images" });
+
+    // Free plan: at most 3 active items; pending and approved count, rejected and inactive don't
+    if (req.user.subscriptionPlan !== "premium") {
+        const activeCount = await menuItemsCollection.countDocuments({ vendorId: req.user._id, status: { $in: ["pending", "approved"] } });
+        if (activeCount >= freePlanLimit) return res.status(403).send({ message: "Free plan allows 3 active items. Upgrade to Premium for unlimited." });
+    }
+
+    const menuItem = {
+        vendorId: req.user._id,
+        itemName: itemName.trim(),
+        category,
+        description: description.trim(),
+        price,
+        location: location.trim(),
+        images,
+        status: "pending",
+        createdAt: new Date(),
+    };
+    const result = await menuItemsCollection.insertOne(menuItem);
+    res.status(201).send(result);
+});
+
+// Admin: menu items
+// every item from every vendor, pending first so the review queue is on top; ?search= matches the name, ?status= filters
+app.get("/admin/menu-items", verifyToken, loadUser, verifyRole("admin"), async (req, res) => {
+    const { search, status } = req.query;
+    const query = {};
+
+    if (typeof search === "string" && search) {
+        // escape regex symbols so the search is matched as plain text
+        const safeSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        query.itemName = { $regex: safeSearch, $options: "i" };
+    }
+    if (["pending", "approved", "rejected", "inactive"].includes(status)) query.status = status;
+
+    // aggregate runs the steps in order, like a pipeline
+    const items = await menuItemsCollection.aggregate([
+        { $match: query },
+        // isPending: true/false per item, only used for sorting
+        { $addFields: { isPending: { $eq: ["$status", "pending"] } } },
+        { $sort: { isPending: -1, createdAt: -1 } },
+        // $lookup: finds the vendor in users (vendorId = _id) and attaches them as an array called vendor
+        { $lookup: { from: "users", localField: "vendorId", foreignField: "_id", as: "vendor" } },
+        // $unwind: turns that one-item array into a plain object
+        { $unwind: "$vendor" },
+        // keep only what the page shows (no isPending, only safe vendor fields)
+        { $project: { isPending: 0, vendor: { _id: 0, emailVerified: 0, createdAt: 0, updatedAt: 0, image: 0, isBlocked: 0, role: 0 } } },
+    ]).toArray();
+
+    res.send(items);
+});
+
+// Approve or reject a menu item: body { status: "approved" | "rejected" }
+app.patch("/admin/menu-items/:id/status", verifyToken, loadUser, verifyRole("admin"), async (req, res) => {
+    const id = req.params.id;
+    const { status } = req.body ?? {};
+
+    if (!ObjectId.isValid(id)) return res.status(404).send({ message: "This menu item doesn't exist" });
+    if (!["approved", "rejected"].includes(status)) return res.status(400).send({ message: "Choose to approve or reject this item" });
+
+    // verifying if item exists
+    const item = await menuItemsCollection.findOne({ _id: new ObjectId(id) });
+    if (!item) return res.status(404).send({ message: "This menu item doesn't exist" });
+
+    // the vendor switched it off; approving it would put it back on the menu without them
+    if (item.status === "inactive") return res.status(409).send({ message: "The vendor has made this item unavailable" });
+
+    const result = await menuItemsCollection.updateOne({ _id: new ObjectId(id) }, { $set: { status } });
+    res.send(result);
+});
+
 // Stats
 // admin overview: numbers for the stat cards and the two charts
 app.get("/stats/admin", verifyToken, loadUser, verifyRole("admin"), async (req, res) => {
