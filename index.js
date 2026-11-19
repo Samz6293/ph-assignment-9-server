@@ -15,6 +15,9 @@ app.use(express.json());
 // Database connect;
 const mongoClient = await connectToMongoDB();
 const usersCollection = db.collection("users");
+// filled in later by the menu items and Stripe features; counting an empty collection gives 0
+const menuItemsCollection = db.collection("menuItems");
+const transactionsCollection = db.collection("transactions");
 
 app.get("/", (req, res) => {
     res.send({message: "API Working"});
@@ -66,6 +69,35 @@ app.patch("/admin/users/:id/block", verifyToken, loadUser, verifyRole("admin"), 
     res.send(result);
 });
 
+// Stats
+// admin overview: numbers for the stat cards and the two charts
+app.get("/stats/admin", verifyToken, loadUser, verifyRole("admin"), async (req, res) => {
+    // $group puts documents with the same role together and counts them: [{ _id: "vendor", count: 2 }, ...]
+    const usersByRole = await usersCollection.aggregate([
+        { $group: { _id: "$role", count: { $sum: 1 } } },
+    ]).toArray();
+    const itemsByStatus = await menuItemsCollection.aggregate([
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+    ]).toArray();
+    const totalTransactions = await transactionsCollection.countDocuments();
+
+    // reads one group's count, or 0 when nothing has that role/status yet
+    const countOf = (groups, key) => groups.find((group) => group._id === key)?.count ?? 0;
+    const total = (groups) => groups.reduce((sum, group) => sum + group.count, 0);
+
+    res.send({
+        totalUsers: total(usersByRole),
+        customers: countOf(usersByRole, "customer"),
+        vendors: countOf(usersByRole, "vendor"),
+        admins: countOf(usersByRole, "admin"),
+        totalMenuItems: total(itemsByStatus),
+        pendingMenuItems: countOf(itemsByStatus, "pending"),
+        approvedMenuItems: countOf(itemsByStatus, "approved"),
+        rejectedMenuItems: countOf(itemsByStatus, "rejected"),
+        totalTransactions,
+    });
+});
+
 app.listen(PORT, ()=> {
-    console.log(`Server runnig on: http://localhost:${PORT}`);
+    console.log(`Server running on: http://localhost:${PORT}`);
 })
