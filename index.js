@@ -74,40 +74,129 @@ app.patch("/admin/users/:id/block", verifyToken, loadUser, verifyRole("admin"), 
 const categories = ["Classic Pizzas", "Vegetarian Pizzas", "Meat Lovers", "Specialty / Gourmet Pizzas", "BBQ Pizza", "Italiano"];
 const freePlanLimit = 3;
 
-// Add a menu item (vendor): saved as pending until an admin approves it
-app.post("/menu-items", verifyToken, loadUser, verifyRole("vendor"), async (req, res) => {
-    const { itemName, category, description, price, location, images } = req.body ?? {};
-
-    // the form checks these too, but anyone can call the API directly
-    if (typeof itemName !== "string" || !itemName.trim()) return res.status(400).send({ message: "Enter the item's name" });
-    if (!categories.includes(category)) return res.status(400).send({ message: "Choose a category from the list" });
-    if (typeof description !== "string" || description.trim().length < 10) return res.status(400).send({ message: "Describe the item in at least 10 characters" });
-    if (typeof price !== "number" || !(price > 0)) return res.status(400).send({ message: "Enter a price above 0" });
-    if (typeof location !== "string" || !location.trim()) return res.status(400).send({ message: "Enter the area and city, e.g. Zindabazar, Sylhet" });
+// checks a vendor's item form; returns the error message, or null when everything is fine
+// shared by create and edit so both always follow the same rules
+const validateMenuItem = ({ itemName, category, description, price, location, images }) => {
+    if (typeof itemName !== "string" || !itemName.trim()) return "Enter the item's name";
+    if (!categories.includes(category)) return "Choose a category from the list";
+    if (typeof description !== "string" || description.trim().length < 10) return "Describe the item in at least 10 characters";
+    if (typeof price !== "number" || !(price > 0)) return "Enter a price above 0";
+    if (typeof location !== "string" || !location.trim()) return "Enter the area and city, e.g. Zindabazar, Sylhet";
 
     const isValidImages = Array.isArray(images) && images.length >= 1 && images.length <= 4
         && images.every((url) => typeof url === "string" && url.startsWith("https://"));
-    if (!isValidImages) return res.status(400).send({ message: "Upload between 1 and 4 images" });
+    if (!isValidImages) return "Upload between 1 and 4 images";
 
-    // Free plan: at most 3 active items; pending and approved count, rejected and inactive don't
-    if (req.user.subscriptionPlan !== "premium") {
-        const activeCount = await menuItemsCollection.countDocuments({ vendorId: req.user._id, status: { $in: ["pending", "approved"] } });
-        if (activeCount >= freePlanLimit) return res.status(403).send({ message: "Free plan allows 3 active items. Upgrade to Premium for unlimited." });
-    }
+    return null;
+};
+
+// Free plan: at most 3 active items; pending and approved count, rejected and inactive don't
+const freePlanMessage = "Free plan allows 3 active items. Upgrade to Premium for unlimited.";
+const isAtFreeLimit = async (user) => {
+    if (user.subscriptionPlan === "premium") return false;
+    const activeCount = await menuItemsCollection.countDocuments({ vendorId: user._id, status: { $in: ["pending", "approved"] } });
+    return activeCount >= freePlanLimit;
+};
+
+// Add a menu item (vendor): saved as pending until an admin approves it
+app.post("/menu-items", verifyToken, loadUser, verifyRole("vendor"), async (req, res) => {
+    const body = req.body ?? {};
+
+    // the form checks these too, but anyone can call the API directly
+    const error = validateMenuItem(body);
+    if (error) return res.status(400).send({ message: error });
+    if (await isAtFreeLimit(req.user)) return res.status(403).send({ message: freePlanMessage });
 
     const menuItem = {
         vendorId: req.user._id,
-        itemName: itemName.trim(),
-        category,
-        description: description.trim(),
-        price,
-        location: location.trim(),
-        images,
+        itemName: body.itemName.trim(),
+        category: body.category,
+        description: body.description.trim(),
+        price: body.price,
+        location: body.location.trim(),
+        images: body.images,
         status: "pending",
         createdAt: new Date(),
     };
     const result = await menuItemsCollection.insertOne(menuItem);
     res.status(201).send(result);
+});
+
+// The vendor's own items, newest first, every status (rejected ones included, so they know)
+app.get("/menu-items/mine", verifyToken, loadUser, verifyRole("vendor"), async (req, res) => {
+    const items = await menuItemsCollection.find({ vendorId: req.user._id }).sort({ createdAt: -1 }).toArray();
+    res.send(items);
+});
+
+// Edit an item (owner): any edit goes back to pending, so an admin checks the new content
+app.patch("/menu-items/:id", verifyToken, loadUser, verifyRole("vendor"), async (req, res) => {
+    const id = req.params.id;
+    const body = req.body ?? {};
+    if (!ObjectId.isValid(id)) return res.status(404).send({ message: "This menu item doesn't exist" });
+
+    // verifying if item exists and belongs to this vendor
+    const item = await menuItemsCollection.findOne({ _id: new ObjectId(id) });
+    if (!item) return res.status(404).send({ message: "This menu item doesn't exist" });
+    // .equals: ObjectIds are objects, so === would compare two different objects and always be false
+    if (!item.vendorId.equals(req.user._id)) return res.status(403).send({ message: "You can only edit your own items" });
+
+    const error = validateMenuItem(body);
+    if (error) return res.status(400).send({ message: error });
+
+    // a rejected or inactive item becomes pending (active) again, so the Free plan limit applies
+    const isActive = ["pending", "approved"].includes(item.status);
+    if (!isActive && await isAtFreeLimit(req.user)) return res.status(403).send({ message: freePlanMessage });
+
+    const result = await menuItemsCollection.updateOne({ _id: item._id }, {
+        $set: {
+            itemName: body.itemName.trim(),
+            category: body.category,
+            description: body.description.trim(),
+            price: body.price,
+            location: body.location.trim(),
+            images: body.images,
+            status: "pending",
+            updatedAt: new Date(),
+        },
+    });
+    res.send(result);
+});
+
+// Switch an approved item off or back on (owner): body { isAvailable: true | false }
+app.patch("/menu-items/:id/availability", verifyToken, loadUser, verifyRole("vendor"), async (req, res) => {
+    const id = req.params.id;
+    const { isAvailable } = req.body ?? {};
+    if (!ObjectId.isValid(id)) return res.status(404).send({ message: "This menu item doesn't exist" });
+    if (typeof isAvailable !== "boolean") return res.status(400).send({ message: "Choose to show or hide this item" });
+
+    // verifying if item exists and belongs to this vendor
+    const item = await menuItemsCollection.findOne({ _id: new ObjectId(id) });
+    if (!item) return res.status(404).send({ message: "This menu item doesn't exist" });
+    if (!item.vendorId.equals(req.user._id)) return res.status(403).send({ message: "You can only change your own items" });
+
+    // only approved items go off (approved → inactive) and back on (inactive → approved), so nothing skips review
+    if (!isAvailable && item.status !== "approved") return res.status(409).send({ message: "Only approved items can be switched off" });
+    if (isAvailable && item.status !== "inactive") return res.status(409).send({ message: "This item isn't switched off" });
+
+    // switching on makes it active again, so the Free plan limit applies
+    if (isAvailable && await isAtFreeLimit(req.user)) return res.status(403).send({ message: freePlanMessage });
+
+    const result = await menuItemsCollection.updateOne({ _id: item._id }, { $set: { status: isAvailable ? "approved" : "inactive" } });
+    res.send(result);
+});
+
+// Delete an item (owner)
+app.delete("/menu-items/:id", verifyToken, loadUser, verifyRole("vendor"), async (req, res) => {
+    const id = req.params.id;
+    if (!ObjectId.isValid(id)) return res.status(404).send({ message: "This menu item doesn't exist" });
+
+    // verifying if item exists and belongs to this vendor
+    const item = await menuItemsCollection.findOne({ _id: new ObjectId(id) });
+    if (!item) return res.status(404).send({ message: "This menu item doesn't exist" });
+    if (!item.vendorId.equals(req.user._id)) return res.status(403).send({ message: "You can only delete your own items" });
+
+    const result = await menuItemsCollection.deleteOne({ _id: item._id });
+    res.send(result);
 });
 
 // Admin: menu items
@@ -198,6 +287,14 @@ app.get("/stats/admin", verifyToken, loadUser, verifyRole("admin"), async (req, 
         rejectedMenuItems: countOf(itemsByStatus, "rejected"),
         totalTransactions,
     });
+});
+
+// Errors
+// any error a route didn't handle (bad JSON, a database failure): JSON for the toast, details only in the server log
+// Express knows this is the error handler because it takes 4 arguments, so next has to stay even though it's unused
+app.use((err, req, res, next) => {
+    console.error(err);
+    res.status(err.status || 500).send({ message: err.status === 400 ? "The request was badly formed" : "Something went wrong on our side" });
 });
 
 app.listen(PORT, ()=> {
