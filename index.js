@@ -199,6 +199,76 @@ app.delete("/menu-items/:id", verifyToken, loadUser, verifyRole("vendor"), async
     res.send(result);
 });
 
+// Public: the menu
+// steps shared by the public list and details: attach the vendor, but only their public fields
+const withPublicVendor = [
+    {
+        $lookup: {
+            from: "users", localField: "vendorId", foreignField: "_id", as: "vendor",
+            // pipeline runs on the matched user: keep name and businessName only (no email, role or block status)
+            pipeline: [{ $project: { _id: 0, name: 1, businessName: 1 } }],
+        },
+    },
+    { $unwind: "$vendor" },
+];
+
+// Browse Menu + Featured: only approved items; ?search= ?category= ?location= ?sort=price_asc|price_desc ?limit=
+app.get("/menu-items", async (req, res) => {
+    const { search, category, location, sort, limit } = req.query;
+    // inactive items are approved items the vendor switched off, so "approved" alone means live
+    const query = { status: "approved" };
+
+    if (typeof search === "string" && search) {
+        const safeSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        query.itemName = { $regex: safeSearch, $options: "i" };
+    }
+    if (categories.includes(category)) query.category = category;
+    if (typeof location === "string" && location) {
+        // the area is typed by vendors, so "zindabazar" should match "Zindabazar, Sylhet"
+        const safeLocation = location.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        query.location = { $regex: safeLocation, $options: "i" };
+    }
+
+    // newest first unless a price sort is asked for; _id breaks ties so the order never jumps around
+    const sortBy = sort === "price_asc" ? { price: 1, _id: 1 }
+        : sort === "price_desc" ? { price: -1, _id: 1 }
+        : { createdAt: -1, _id: 1 };
+
+    // ?limit= between 1 and 50; anything else gets the full cap of 50
+    const limitNumber = Number(limit);
+    const safeLimit = Number.isInteger(limitNumber) && limitNumber >= 1 && limitNumber <= 50 ? limitNumber : 50;
+
+    const items = await menuItemsCollection.aggregate([
+        { $match: query },
+        { $sort: sortBy },
+        { $limit: safeLimit },
+        ...withPublicVendor,
+    ]).toArray();
+
+    res.send(items);
+});
+
+// every area that has a live item, A–Z, for the location filter
+app.get("/menu-items/locations", async (req, res) => {
+    // distinct: each different value once
+    const locations = await menuItemsCollection.distinct("location", { status: "approved" });
+    res.send(locations.sort());
+});
+
+// Item Details: approved items, and switched-off ones (shown as "Not available to order"); never pending or rejected
+app.get("/menu-items/:id", async (req, res) => {
+    const id = req.params.id;
+    if (!ObjectId.isValid(id)) return res.status(404).send({ message: "This menu item doesn't exist" });
+
+    const [item] = await menuItemsCollection.aggregate([
+        { $match: { _id: new ObjectId(id), status: { $in: ["approved", "inactive"] } } },
+        ...withPublicVendor,
+    ]).toArray();
+    if (!item) return res.status(404).send({ message: "This menu item doesn't exist" });
+
+    res.send(item);
+});
+
 // Admin: menu items
 // every item from every vendor, pending first so the review queue is on top; ?search= matches the name, ?status= filters
 app.get("/admin/menu-items", verifyToken, loadUser, verifyRole("admin"), async (req, res) => {
