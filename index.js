@@ -4,7 +4,7 @@ import 'dotenv/config';
 import { ObjectId } from 'mongodb';
 import { connectToMongoDB } from './database/connect.js';
 import { usersCollection, menuItemsCollection, transactionsCollection, ordersCollection } from './database/collections.js';
-import { withPublicVendor } from './database/pipelines.js';
+import { withItemAndVendor, withPublicVendor } from './database/pipelines.js';
 import { verifyToken } from './middleware/verifyToken.js';
 import { loadUser } from './middleware/loadUser.js';
 import { verifyRole } from './middleware/verifyRole.js';
@@ -337,6 +337,31 @@ app.post("/orders", verifyToken, loadUser, verifyRole("customer"), async (req, r
     };
     const result = await ordersCollection.insertOne(order);
     res.status(201).send(result);
+});
+
+// The customer's own orders, newest first, with the item and vendor attached
+app.get("/orders/mine", verifyToken, loadUser, verifyRole("customer"), async (req, res) => {
+    const orders = await ordersCollection.aggregate([
+        { $match: { customerId: req.user._id } },
+        { $sort: { createdAt: -1, _id: 1 } },
+        ...withItemAndVendor,
+    ]).toArray();
+    res.send(orders);
+});
+
+// Cancel an order (owner): only while it's still pending
+app.patch("/orders/:id/cancel", verifyToken, loadUser, verifyRole("customer"), async (req, res) => {
+    const id = req.params.id;
+    if (!ObjectId.isValid(id)) return res.status(404).send({ message: "This order doesn't exist" });
+
+    const order = await ordersCollection.findOne({ _id: new ObjectId(id) });
+    if (!order) return res.status(404).send({ message: "This order doesn't exist" });
+    if (!order.customerId.equals(req.user._id)) return res.status(403).send({ message: "You can only cancel your own orders" });
+    // accepted, rejected and cancelled are final
+    if (order.status !== "pending") return res.status(400).send({ message: `Only pending orders can be cancelled. This one is ${order.status}` });
+
+    const result = await ordersCollection.updateOne({ _id: order._id }, { $set: { status: "cancelled" } });
+    res.send(result);
 });
 
 // Stats
