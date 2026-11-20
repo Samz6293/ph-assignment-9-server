@@ -4,7 +4,7 @@ import 'dotenv/config';
 import { ObjectId } from 'mongodb';
 import { connectToMongoDB } from './database/connect.js';
 import { usersCollection, menuItemsCollection, transactionsCollection, ordersCollection } from './database/collections.js';
-import { withItemAndCustomer, withItemAndVendor, withPublicVendor } from './database/pipelines.js';
+import { withItemAndCustomer, withItemAndVendor, withPublicVendor, withTransactionVendor } from './database/pipelines.js';
 import { verifyToken } from './middleware/verifyToken.js';
 import { loadUser } from './middleware/loadUser.js';
 import { verifyRole } from './middleware/verifyRole.js';
@@ -447,6 +447,16 @@ app.post("/create-checkout-session", verifyToken, loadUser, verifyRole("vendor")
     // the docs answer with res.redirect(303, session.url) to a plain form; our client calls this with fetch
     // (it has to send the Bearer token), and fetch can't open stripe.com as a page, so the client redirects itself
     res.send({ url: session.url });
+});
+
+// Admin: every Premium payment, newest first, with the vendor attached
+// read-only on purpose: transactions come only from the Stripe webhook, and there is no route to change one
+app.get("/admin/transactions", verifyToken, loadUser, verifyRole("admin"), async (req, res) => {
+    const transactions = await transactionsCollection.aggregate([
+        { $sort: { createdAt: -1, _id: 1 } },
+        ...withTransactionVendor,
+    ]).toArray();
+    res.send(transactions);
 });
 
 // Stats

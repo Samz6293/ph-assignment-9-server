@@ -48,3 +48,15 @@ export const withItemAndCustomer = [
     },
     { $unwind: { path: "$customer", preserveNullAndEmptyArrays: true } },
 ];
+
+// steps for the admin's transactions list: attach the vendor who paid
+export const withTransactionVendor = [
+    {
+        $lookup: {
+            from: "users", localField: "vendorId", foreignField: "_id", as: "vendor",
+            pipeline: [{ $project: { _id: 0, name: 1, email: 1, businessName: 1 } }],
+        },
+    },
+    // a deleted vendor's payment still shows; transactions are a money record and never drop out
+    { $unwind: { path: "$vendor", preserveNullAndEmptyArrays: true } },
+];
