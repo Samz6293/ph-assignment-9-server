@@ -29,3 +29,22 @@ export const withItemAndVendor = [
     },
     { $unwind: { path: "$vendor", preserveNullAndEmptyArrays: true } },
 ];
+
+// steps for a vendor's incoming orders: attach the item and the customer who ordered it
+export const withItemAndCustomer = [
+    {
+        $lookup: {
+            from: "menuItems", localField: "itemId", foreignField: "_id", as: "item",
+            pipeline: [{ $project: { _id: 1, itemName: 1, images: 1, price: 1, category: 1 } }],
+        },
+    },
+    { $unwind: { path: "$item", preserveNullAndEmptyArrays: true } },
+    {
+        $lookup: {
+            from: "users", localField: "customerId", foreignField: "_id", as: "customer",
+            // email so the vendor can reach the customer about the order
+            pipeline: [{ $project: { _id: 0, name: 1, email: 1, image: 1 } }],
+        },
+    },
+    { $unwind: { path: "$customer", preserveNullAndEmptyArrays: true } },
+];

@@ -4,7 +4,7 @@ import 'dotenv/config';
 import { ObjectId } from 'mongodb';
 import { connectToMongoDB } from './database/connect.js';
 import { usersCollection, menuItemsCollection, transactionsCollection, ordersCollection } from './database/collections.js';
-import { withItemAndVendor, withPublicVendor } from './database/pipelines.js';
+import { withItemAndCustomer, withItemAndVendor, withPublicVendor } from './database/pipelines.js';
 import { verifyToken } from './middleware/verifyToken.js';
 import { loadUser } from './middleware/loadUser.js';
 import { verifyRole } from './middleware/verifyRole.js';
@@ -361,6 +361,35 @@ app.patch("/orders/:id/cancel", verifyToken, loadUser, verifyRole("customer"), a
     if (order.status !== "pending") return res.status(400).send({ message: `Only pending orders can be cancelled. This one is ${order.status}` });
 
     const result = await ordersCollection.updateOne({ _id: order._id }, { $set: { status: "cancelled" } });
+    res.send(result);
+});
+
+// Orders for the vendor's items, newest first, with the item and customer attached
+app.get("/orders/vendor", verifyToken, loadUser, verifyRole("vendor"), async (req, res) => {
+    const orders = await ordersCollection.aggregate([
+        { $match: { vendorId: req.user._id } },
+        { $sort: { createdAt: -1, _id: 1 } },
+        ...withItemAndCustomer,
+    ]).toArray();
+    res.send(orders);
+});
+
+// Accept or reject an order (the item's vendor): body { status: "accepted" | "rejected" }, pending orders only, once
+app.patch("/orders/:id/status", verifyToken, loadUser, verifyRole("vendor"), async (req, res) => {
+    const id = req.params.id;
+    const status = req.body?.status;
+    if (!["accepted", "rejected"].includes(status)) return res.status(400).send({ message: "Choose accept or reject" });
+    if (!ObjectId.isValid(id)) return res.status(404).send({ message: "This order doesn't exist" });
+
+    const order = await ordersCollection.findOne({ _id: new ObjectId(id) });
+    if (!order) return res.status(404).send({ message: "This order doesn't exist" });
+    if (!order.vendorId.equals(req.user._id)) return res.status(403).send({ message: "You can only manage orders for your own items" });
+    if (order.status !== "pending") return res.status(400).send({ message: `This order is already ${order.status}` });
+
+    // status: "pending" in the filter too: if two clicks arrive together, only the first one changes anything
+    const result = await ordersCollection.updateOne({ _id: order._id, status: "pending" }, { $set: { status } });
+    if (result.modifiedCount === 0) return res.status(400).send({ message: "This order was already answered" });
+
     res.send(result);
 });
 
