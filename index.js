@@ -14,6 +14,7 @@ import { formatDate } from './utils/date.js';
 import { freePlanMessage, isAtFreeLimit } from './utils/freePlan.js';
 import { escapeRegex } from './utils/regex.js';
 import { countOf, total } from './utils/stats.js';
+import { stripe } from './utils/stripe.js';
 
 const app = express();
 const PORT = 8080;
@@ -392,6 +393,38 @@ app.patch("/orders/:id/status", verifyToken, loadUser, verifyRole("vendor"), asy
     if (result.modifiedCount === 0) return res.status(400).send({ message: "This order was already answered" });
 
     res.send(result);
+});
+
+// Subscriptions
+// Upgrade to Premium (vendor): creates a Stripe-hosted Checkout page and sends back its link
+// follows Stripe's "Build a Stripe-hosted checkout page" quickstart (docs.stripe.com/payments/checkout)
+// Premium is NOT switched on here; only the webhook does that, after Stripe confirms the payment
+app.post("/create-checkout-session", verifyToken, loadUser, verifyRole("vendor"), async (req, res) => {
+    if (req.user.subscriptionPlan === "premium") return res.status(400).send({ message: "You're already on Premium" });
+
+    const vendorId = req.user._id.toString();
+    const session = await stripe.checkout.sessions.create({
+        mode: "subscription",
+        line_items: [
+            {
+                // Provide the exact Price ID (for example, price_1234) of the product you want to sell
+                price: process.env.STRIPE_PREMIUM_PRICE_ID,
+                quantity: 1,
+            },
+        ],
+        customer_email: req.user.email,
+        // who paid: the webhook reads this to know which vendor to upgrade
+        client_reference_id: vendorId,
+        // stored on the subscription too, so its "deleted" event months later still says whose it was
+        subscription_data: { metadata: { vendorId } },
+        // Stripe swaps {CHECKOUT_SESSION_ID} for the real id, so the success page can check on it
+        success_url: `${process.env.CLIENT_URL}/dashboard/vendor/subscription/success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.CLIENT_URL}/dashboard/vendor/subscription/cancel`,
+    });
+
+    // the docs answer with res.redirect(303, session.url) to a plain form; our client calls this with fetch
+    // (it has to send the Bearer token), and fetch can't open stripe.com as a page, so the client redirects itself
+    res.send({ url: session.url });
 });
 
 // Stats
