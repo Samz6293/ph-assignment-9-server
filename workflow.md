@@ -171,7 +171,7 @@ Commits: C6 · S3 · running total C20 · S6
 | 4.3 | Pizza Categories (6 tiles → `/menu?category=`) |
 | 4.4 | Why Choose PizzaHub? |
 | 4.5 | How PizzaHub Works |
-| 4.6 | Motion on home sections (fade-up on scroll, reduced-motion respected) |
+| ~~4.6~~ | Motion moved to Phase 10 (dh1 wants to learn it first) |
 
 Commits: C6 · running total C26 · S6
 
@@ -238,6 +238,7 @@ Dark mode (Phase 1.5) counts as the second optional feature.
 
 ### Phase 10 — Polish · `fix/<name>` branches as needed
 
+- Motion on home sections (fade-up on scroll, banner on load, card hover lift, reduced-motion respected), after dh1 has read up on Motion
 - Responsive pass on every page at 375 / 768 / 1280
 - Loading and error states audit against `design.md` section 10
 - Every toast checked against the voice rules

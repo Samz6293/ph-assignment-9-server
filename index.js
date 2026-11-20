@@ -2,10 +2,17 @@ import express from 'express';
 import cors from 'cors';
 import 'dotenv/config';
 import { ObjectId } from 'mongodb';
-import { connectToMongoDB, db } from './database/connect.js';
+import { connectToMongoDB } from './database/connect.js';
+import { usersCollection, menuItemsCollection, transactionsCollection, ordersCollection } from './database/collections.js';
+import { withPublicVendor } from './database/pipelines.js';
 import { verifyToken } from './middleware/verifyToken.js';
 import { loadUser } from './middleware/loadUser.js';
 import { verifyRole } from './middleware/verifyRole.js';
+import { categories, validateMenuItem } from './validation/menuItem.js';
+import { validateOrder } from './validation/order.js';
+import { formatDate } from './utils/date.js';
+import { freePlanMessage, isAtFreeLimit } from './utils/freePlan.js';
+import { escapeRegex } from './utils/regex.js';
 
 const app = express();
 const PORT = 8080;
@@ -14,10 +21,6 @@ app.use(express.json());
 
 // Database connect;
 const mongoClient = await connectToMongoDB();
-const usersCollection = db.collection("users");
-// filled in later by the menu items and Stripe features; counting an empty collection gives 0
-const menuItemsCollection = db.collection("menuItems");
-const transactionsCollection = db.collection("transactions");
 
 app.get("/", (req, res) => {
     res.send({message: "API Working"});
@@ -38,7 +41,7 @@ app.get("/admin/users", verifyToken, loadUser, verifyRole("admin"), async (req, 
 
     if (typeof search === "string" && search) {
         // escape regex symbols so a search like "a.b" matches the text "a.b" literally
-        const safeSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const safeSearch = escapeRegex(search);
         query.$or = [
             { name: { $regex: safeSearch, $options: "i" } },
             { email: { $regex: safeSearch, $options: "i" } },
@@ -70,34 +73,6 @@ app.patch("/admin/users/:id/block", verifyToken, loadUser, verifyRole("admin"), 
 });
 
 // Menu items
-// the six categories from the assignment; the client's dropdown uses the same list
-const categories = ["Classic Pizzas", "Vegetarian Pizzas", "Meat Lovers", "Specialty / Gourmet Pizzas", "Sides & Appetizers", "Beverages & Desserts"];
-const freePlanLimit = 3;
-
-// checks a vendor's item form; returns the error message, or null when everything is fine
-// shared by create and edit so both always follow the same rules
-const validateMenuItem = ({ itemName, category, description, price, location, images }) => {
-    if (typeof itemName !== "string" || !itemName.trim()) return "Enter the item's name";
-    if (!categories.includes(category)) return "Choose a category from the list";
-    if (typeof description !== "string" || description.trim().length < 10) return "Describe the item in at least 10 characters";
-    if (typeof price !== "number" || !(price > 0)) return "Enter a price above 0";
-    if (typeof location !== "string" || !location.trim()) return "Enter the area and city, e.g. Zindabazar, Sylhet";
-
-    const isValidImages = Array.isArray(images) && images.length >= 1 && images.length <= 4
-        && images.every((url) => typeof url === "string" && url.startsWith("https://"));
-    if (!isValidImages) return "Upload between 1 and 4 images";
-
-    return null;
-};
-
-// Free plan: at most 3 active items; pending and approved count, rejected and inactive don't
-const freePlanMessage = "Free plan allows 3 active items. Upgrade to Premium for unlimited.";
-const isAtFreeLimit = async (user) => {
-    if (user.subscriptionPlan === "premium") return false;
-    const activeCount = await menuItemsCollection.countDocuments({ vendorId: user._id, status: { $in: ["pending", "approved"] } });
-    return activeCount >= freePlanLimit;
-};
-
 // Add a menu item (vendor): saved as pending until an admin approves it
 app.post("/menu-items", verifyToken, loadUser, verifyRole("vendor"), async (req, res) => {
     const body = req.body ?? {};
@@ -200,19 +175,6 @@ app.delete("/menu-items/:id", verifyToken, loadUser, verifyRole("vendor"), async
 });
 
 // Public: the menu
-// steps shared by the public list and details: attach the vendor, but only their public fields
-const withPublicVendor = [
-    {
-        $lookup: {
-            from: "users", localField: "vendorId", foreignField: "_id", as: "vendor",
-            // pipeline runs on the matched user: keep only public fields (no email, role or block status)
-            // subscriptionPlan: Premium vendors get a badge on their cards
-            pipeline: [{ $project: { _id: 0, name: 1, businessName: 1, subscriptionPlan: 1 } }],
-        },
-    },
-    { $unwind: "$vendor" },
-];
-
 // Browse Menu + Featured: only approved items; ?search= ?category= ?location= ?sort=price_asc|price_desc|featured ?limit=
 app.get("/menu-items", async (req, res) => {
     const { search, category, location, sort, limit } = req.query;
@@ -220,7 +182,7 @@ app.get("/menu-items", async (req, res) => {
     const query = { status: "approved" };
 
     if (typeof search === "string" && search) {
-        const safeSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const safeSearch = escapeRegex(search);
         // matches the item name or its category, so "dessert" finds Brownie as well as "Chocolate Dessert Pizza"
         query.$or = [
             { itemName: { $regex: safeSearch, $options: "i" } },
@@ -230,7 +192,7 @@ app.get("/menu-items", async (req, res) => {
     if (categories.includes(category)) query.category = category;
     if (typeof location === "string" && location) {
         // the area is typed by vendors, so "zindabazar" should match "Zindabazar, Sylhet"
-        const safeLocation = location.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const safeLocation = escapeRegex(location);
         query.location = { $regex: safeLocation, $options: "i" };
     }
 
@@ -285,7 +247,7 @@ app.get("/admin/menu-items", verifyToken, loadUser, verifyRole("admin"), async (
 
     if (typeof search === "string" && search) {
         // escape regex symbols so the search is matched as plain text
-        const safeSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const safeSearch = escapeRegex(search);
         query.itemName = { $regex: safeSearch, $options: "i" };
     }
     if (["pending", "approved", "rejected", "inactive"].includes(status)) query.status = status;
@@ -336,6 +298,45 @@ app.delete("/admin/menu-items/:id", verifyToken, loadUser, verifyRole("admin"), 
     if (result.deletedCount === 0) return res.status(404).send({ message: "This menu item doesn't exist" });
 
     res.send(result);
+});
+
+// Orders
+// Place an order (customer): saved as pending until the vendor accepts or rejects it
+app.post("/orders", verifyToken, loadUser, verifyRole("customer"), async (req, res) => {
+    const body = req.body ?? {};
+
+    const error = validateOrder(body);
+    if (error) return res.status(400).send({ message: error });
+
+    // pending and rejected items don't exist for customers; switched-off ones exist but can't be ordered
+    const item = await menuItemsCollection.findOne({ _id: new ObjectId(body.itemId) });
+    if (!item || !["approved", "inactive"].includes(item.status)) return res.status(404).send({ message: "This menu item doesn't exist" });
+    if (item.status === "inactive") return res.status(400).send({ message: "This item isn't available to order right now" });
+
+    // verifyRole already keeps vendors out; this guards the rule itself in case roles ever overlap
+    if (item.vendorId.equals(req.user._id)) return res.status(403).send({ message: "You can't order your own item" });
+
+    // one active order per item per day; a cancelled or rejected one doesn't block a new order
+    const duplicate = await ordersCollection.findOne({
+        itemId: item._id,
+        customerId: req.user._id,
+        deliveryDate: body.deliveryDate,
+        status: { $in: ["pending", "accepted"] },
+    });
+    if (duplicate) return res.status(409).send({ message: `You already ordered this for ${formatDate(body.deliveryDate)}` });
+
+    const order = {
+        itemId: item._id,
+        vendorId: item.vendorId,
+        customerId: req.user._id,
+        deliveryDate: body.deliveryDate,
+        deliveryAddress: body.deliveryAddress.trim(),
+        message: body.message?.trim() ?? "",
+        status: "pending",
+        createdAt: new Date(),
+    };
+    const result = await ordersCollection.insertOne(order);
+    res.status(201).send(result);
 });
 
 // Stats
