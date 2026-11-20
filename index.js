@@ -13,6 +13,7 @@ import { validateOrder } from './validation/order.js';
 import { formatDate } from './utils/date.js';
 import { freePlanMessage, isAtFreeLimit } from './utils/freePlan.js';
 import { escapeRegex } from './utils/regex.js';
+import { countOf, total } from './utils/stats.js';
 
 const app = express();
 const PORT = 8080;
@@ -405,10 +406,6 @@ app.get("/stats/admin", verifyToken, loadUser, verifyRole("admin"), async (req, 
     ]).toArray();
     const totalTransactions = await transactionsCollection.countDocuments();
 
-    // reads one group's count, or 0 when nothing has that role/status yet
-    const countOf = (groups, key) => groups.find((group) => group._id === key)?.count ?? 0;
-    const total = (groups) => groups.reduce((sum, group) => sum + group.count, 0);
-
     res.send({
         totalUsers: total(usersByRole),
         customers: countOf(usersByRole, "customer"),
@@ -419,6 +416,49 @@ app.get("/stats/admin", verifyToken, loadUser, verifyRole("admin"), async (req, 
         approvedMenuItems: countOf(itemsByStatus, "approved"),
         rejectedMenuItems: countOf(itemsByStatus, "rejected"),
         totalTransactions,
+    });
+});
+
+// vendor overview: their items and the orders for them, plus their plan
+app.get("/stats/vendor", verifyToken, loadUser, verifyRole("vendor"), async (req, res) => {
+    const itemsByStatus = await menuItemsCollection.aggregate([
+        { $match: { vendorId: req.user._id } },
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+    ]).toArray();
+    const ordersByStatus = await ordersCollection.aggregate([
+        { $match: { vendorId: req.user._id } },
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+    ]).toArray();
+
+    res.send({
+        totalMenuItems: total(itemsByStatus),
+        // active: the same meaning as the Free plan limit (pending + approved)
+        activeMenuItems: countOf(itemsByStatus, "pending") + countOf(itemsByStatus, "approved"),
+        pendingMenuItems: countOf(itemsByStatus, "pending"),
+        approvedMenuItems: countOf(itemsByStatus, "approved"),
+        rejectedMenuItems: countOf(itemsByStatus, "rejected"),
+        inactiveMenuItems: countOf(itemsByStatus, "inactive"),
+        pendingOrders: countOf(ordersByStatus, "pending"),
+        acceptedOrders: countOf(ordersByStatus, "accepted"),
+        rejectedOrders: countOf(ordersByStatus, "rejected"),
+        cancelledOrders: countOf(ordersByStatus, "cancelled"),
+        subscriptionPlan: req.user.subscriptionPlan === "premium" ? "premium" : "free",
+    });
+});
+
+// customer overview: their orders by status
+app.get("/stats/customer", verifyToken, loadUser, verifyRole("customer"), async (req, res) => {
+    const ordersByStatus = await ordersCollection.aggregate([
+        { $match: { customerId: req.user._id } },
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+    ]).toArray();
+
+    res.send({
+        totalOrders: total(ordersByStatus),
+        pendingOrders: countOf(ordersByStatus, "pending"),
+        acceptedOrders: countOf(ordersByStatus, "accepted"),
+        rejectedOrders: countOf(ordersByStatus, "rejected"),
+        cancelledOrders: countOf(ordersByStatus, "cancelled"),
     });
 });
 
