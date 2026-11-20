@@ -384,7 +384,8 @@ app.patch("/orders/:id/cancel", verifyToken, loadUser, verifyRole("customer"), a
     // accepted, rejected and cancelled are final
     if (order.status !== "pending") return res.status(400).send({ message: `Only pending orders can be cancelled. This one is ${order.status}` });
 
-    const result = await ordersCollection.updateOne({ _id: order._id }, { $set: { status: "cancelled" } });
+    // statusUpdatedAt: when it changed, for the order timeline
+    const result = await ordersCollection.updateOne({ _id: order._id }, { $set: { status: "cancelled", statusUpdatedAt: new Date() } });
     res.send(result);
 });
 
@@ -411,7 +412,8 @@ app.patch("/orders/:id/status", verifyToken, loadUser, verifyRole("vendor"), asy
     if (order.status !== "pending") return res.status(400).send({ message: `This order is already ${order.status}` });
 
     // status: "pending" in the filter too: if two clicks arrive together, only the first one changes anything
-    const result = await ordersCollection.updateOne({ _id: order._id, status: "pending" }, { $set: { status } });
+    // statusUpdatedAt: when the vendor answered, for the order timeline
+    const result = await ordersCollection.updateOne({ _id: order._id, status: "pending" }, { $set: { status, statusUpdatedAt: new Date() } });
     if (result.modifiedCount === 0) return res.status(400).send({ message: "This order was already answered" });
 
     res.send(result);
