@@ -15,10 +15,32 @@ import { freePlanMessage, isAtFreeLimit } from './utils/freePlan.js';
 import { escapeRegex } from './utils/regex.js';
 import { countOf, total } from './utils/stats.js';
 import { stripe } from './utils/stripe.js';
+import { endPremium, fulfillCheckout } from './utils/subscription.js';
 
 const app = express();
 const PORT = 8080;
 app.use(cors());
+
+// Stripe webhook: Stripe tells us a payment went through; the only place Premium is switched on
+app.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+    const signature = req.headers["stripe-signature"];
+
+    // fails unless Stripe signed this request with our STRIPE_WEBHOOK_SECRET, so a fake "paid" message is rejected
+    let event;
+    try {
+        event = stripe.webhooks.constructEvent(req.body, signature, process.env.STRIPE_WEBHOOK_SECRET);
+    }
+    catch (err) {
+        return res.status(400).send({ message: `Webhook Error: ${err.message}` });
+    }
+
+    if (event.type === "checkout.session.completed") await fulfillCheckout(event.data.object.id);
+    if (event.type === "customer.subscription.deleted") await endPremium(event.data.object);
+
+    // a 2xx tells Stripe we got it; anything else makes Stripe try again later
+    res.send({ received: true });
+});
+
 app.use(express.json());
 
 // Database connect;
