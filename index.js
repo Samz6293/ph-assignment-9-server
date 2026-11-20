@@ -213,7 +213,7 @@ const withPublicVendor = [
     { $unwind: "$vendor" },
 ];
 
-// Browse Menu + Featured: only approved items; ?search= ?category= ?location= ?sort=price_asc|price_desc ?limit=
+// Browse Menu + Featured: only approved items; ?search= ?category= ?location= ?sort=price_asc|price_desc|featured ?limit=
 app.get("/menu-items", async (req, res) => {
     const { search, category, location, sort, limit } = req.query;
     // inactive items are approved items the vendor switched off, so "approved" alone means live
@@ -235,8 +235,10 @@ app.get("/menu-items", async (req, res) => {
     }
 
     // newest first unless a price sort is asked for; _id breaks ties so the order never jumps around
+    // featured (home page): "premium" sorts after "free" A–Z, so -1 puts Premium vendors' items first
     const sortBy = sort === "price_asc" ? { price: 1, _id: 1 }
         : sort === "price_desc" ? { price: -1, _id: 1 }
+        : sort === "featured" ? { "vendor.subscriptionPlan": -1, createdAt: -1, _id: 1 }
         : { createdAt: -1, _id: 1 };
 
     // ?limit= between 1 and 50; anything else gets the full cap of 50
@@ -245,9 +247,10 @@ app.get("/menu-items", async (req, res) => {
 
     const items = await menuItemsCollection.aggregate([
         { $match: query },
+        // vendor is attached before sorting, so the featured sort can read their plan
+        ...withPublicVendor,
         { $sort: sortBy },
         { $limit: safeLimit },
-        ...withPublicVendor,
     ]).toArray();
 
     res.send(items);
