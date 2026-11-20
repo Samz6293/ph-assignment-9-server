@@ -263,6 +263,28 @@ app.get("/menu-items/:id", async (req, res) => {
     res.send(item);
 });
 
+// Public: the newest pizzeria, for the home page hero chip
+// newest vendor who isn't blocked and has at least one live item; the area comes from that item
+app.get("/vendors/latest", async (req, res) => {
+    const [vendor] = await usersCollection.aggregate([
+        { $match: { role: "vendor", isBlocked: { $ne: true } } },
+        { $sort: { createdAt: -1 } },
+        {
+            $lookup: {
+                from: "menuItems", localField: "_id", foreignField: "vendorId", as: "item",
+                // only their newest live item, and only its area
+                pipeline: [{ $match: { status: "approved" } }, { $sort: { createdAt: -1 } }, { $limit: 1 }, { $project: { _id: 0, location: 1 } }],
+            },
+        },
+        // plain $unwind drops vendors whose lookup found nothing, so a shop with an empty menu is skipped
+        { $unwind: "$item" },
+        { $limit: 1 },
+    ]).toArray();
+    if (!vendor) return res.status(404).send({ message: "No pizzerias on PizzaHub yet" });
+
+    res.send({ businessName: vendor.businessName ?? vendor.name, location: vendor.item.location });
+});
+
 // Admin: menu items
 // every item from every vendor, pending first so the review queue is on top; ?search= matches the name, ?status= filters
 app.get("/admin/menu-items", verifyToken, loadUser, verifyRole("admin"), async (req, res) => {
