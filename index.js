@@ -71,7 +71,7 @@ app.patch("/admin/users/:id/block", verifyToken, loadUser, verifyRole("admin"), 
 
 // Menu items
 // the six categories from the assignment; the client's dropdown uses the same list
-const categories = ["Classic Pizzas", "Vegetarian Pizzas", "Meat Lovers", "Specialty / Gourmet Pizzas", "BBQ Pizza", "Italiano"];
+const categories = ["Classic Pizzas", "Vegetarian Pizzas", "Meat Lovers", "Specialty / Gourmet Pizzas", "Sides & Appetizers", "Beverages & Desserts"];
 const freePlanLimit = 3;
 
 // checks a vendor's item form; returns the error message, or null when everything is fine
@@ -221,7 +221,7 @@ app.get("/menu-items", async (req, res) => {
 
     if (typeof search === "string" && search) {
         const safeSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        // matches the item name or its category, so "italiano" finds Lasagna as well as "Italiano Supreme"
+        // matches the item name or its category, so "dessert" finds Brownie as well as "Chocolate Dessert Pizza"
         query.$or = [
             { itemName: { $regex: safeSearch, $options: "i" } },
             { category: { $regex: safeSearch, $options: "i" } },
