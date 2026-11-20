@@ -15,7 +15,7 @@ import { freePlanMessage, isAtFreeLimit } from './utils/freePlan.js';
 import { escapeRegex } from './utils/regex.js';
 import { countOf, total } from './utils/stats.js';
 import { stripe } from './utils/stripe.js';
-import { endPremium, fulfillCheckout } from './utils/subscription.js';
+import { endPremium, fulfillCheckout, getSubscriptionId } from './utils/subscription.js';
 
 const app = express();
 const PORT = 8080;
@@ -471,6 +471,33 @@ app.post("/create-checkout-session", verifyToken, loadUser, verifyRole("vendor")
     // the docs answer with res.redirect(303, session.url) to a plain form; our client calls this with fetch
     // (it has to send the Bearer token), and fetch can't open stripe.com as a page, so the client redirects itself
     res.send({ url: session.url });
+});
+
+// Cancel Premium (vendor): stops the renewal; they keep Premium until the end of the month they paid for
+// Stripe then ends the subscription and sends customer.subscription.deleted, and the webhook puts them on Free
+app.post("/subscriptions/cancel", verifyToken, loadUser, verifyRole("vendor"), async (req, res) => {
+    if (req.user.subscriptionPlan !== "premium") return res.status(400).send({ message: "You're not on Premium" });
+    if (req.user.cancelAtPeriodEnd) return res.status(400).send({ message: "Your Premium is already set to end" });
+
+    const subscriptionId = await getSubscriptionId(req.user._id);
+    if (!subscriptionId) return res.status(404).send({ message: "We couldn't find your subscription. Contact support" });
+
+    await stripe.subscriptions.update(subscriptionId, { cancel_at_period_end: true });
+    const result = await usersCollection.updateOne({ _id: req.user._id }, { $set: { cancelAtPeriodEnd: true } });
+    res.send(result);
+});
+
+// Keep Premium (vendor): undoes a cancel before the month runs out, so it renews again
+app.post("/subscriptions/resume", verifyToken, loadUser, verifyRole("vendor"), async (req, res) => {
+    if (req.user.subscriptionPlan !== "premium") return res.status(400).send({ message: "You're not on Premium" });
+    if (!req.user.cancelAtPeriodEnd) return res.status(400).send({ message: "Your Premium already renews every month" });
+
+    const subscriptionId = await getSubscriptionId(req.user._id);
+    if (!subscriptionId) return res.status(404).send({ message: "We couldn't find your subscription. Contact support" });
+
+    await stripe.subscriptions.update(subscriptionId, { cancel_at_period_end: false });
+    const result = await usersCollection.updateOne({ _id: req.user._id }, { $set: { cancelAtPeriodEnd: false } });
+    res.send(result);
 });
 
 // Admin: every Premium payment, newest first, with the vendor attached

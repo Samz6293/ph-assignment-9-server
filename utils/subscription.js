@@ -32,7 +32,8 @@ export async function fulfillCheckout(sessionId) {
         status: session.payment_status,
         createdAt: new Date(),
     });
-    await usersCollection.updateOne({ _id: vendorId }, { $set: { subscriptionPlan: "premium", subscriptionExpiresAt: expiresAt } });
+    // cancelAtPeriodEnd: false, a fresh subscription renews every month
+    await usersCollection.updateOne({ _id: vendorId }, { $set: { subscriptionPlan: "premium", subscriptionExpiresAt: expiresAt, cancelAtPeriodEnd: false } });
 }
 
 // back to Free when a subscription ends (cancelled, or a renewal payment failed for good)
@@ -41,5 +42,11 @@ export async function endPremium(subscription) {
     const vendorId = subscription.metadata?.vendorId;
     if (!vendorId || !ObjectId.isValid(vendorId)) return;
 
-    await usersCollection.updateOne({ _id: new ObjectId(vendorId) }, { $set: { subscriptionPlan: "free", subscriptionExpiresAt: null } });
+    await usersCollection.updateOne({ _id: new ObjectId(vendorId) }, { $set: { subscriptionPlan: "free", subscriptionExpiresAt: null, cancelAtPeriodEnd: false } });
+}
+
+// the vendor's current Stripe subscription id, from their newest payment; null if they never paid
+export async function getSubscriptionId(vendorId) {
+    const [transaction] = await transactionsCollection.find({ vendorId }).sort({ createdAt: -1 }).limit(1).toArray();
+    return transaction?.stripeSubscriptionId ?? null;
 }
